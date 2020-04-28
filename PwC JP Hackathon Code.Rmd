@@ -1,0 +1,581 @@
+---
+title: "Panel Data Analysis: Price Markdown Effects on Retail Sales"
+subtitle: Data provided by PricewaterhouseCoopers Japan
+author: Rivaldo Philip
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+#font-import:
+  #font-family: 'Yantramanav'
+output:
+  html_document:
+    number_sections: no
+    self_contained: yes
+keywords: machine learning; econometrics; panel data
+theme: null
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, comment=NA)
+```
+
+```{r results='hide',message=FALSE}
+library(readr)
+library(tidyverse)
+library(magrittr)
+library(dplyr)
+library(seasonal)
+library(urca)
+library(dynlm)
+library(CausalImpact)
+library(arsenal)
+library(phtt)
+library(foreign)
+library(fastDummies)
+library(Hmisc)
+library(dynlm)
+library(plm)
+library(forecast)
+library(panelView) 
+library(data.table)
+```
+
+```{r echo=FALSE, results='hide',message=FALSE}
+# Preparing the dataframe
+# PwC_data <- read_csv("Datasets/PwC Hackathon/PwC data.csv")
+# PwC_data$type <- NULL
+# na_count <-sapply(pwc_panel, function(y) sum(length(which(is.na(y)))))
+# na_count <- data.frame(na_count)
+# 
+# storedum <- dummy_cols(PwC_data$store)
+# 
+# PwC_panel <- cbind(PwC_data, storedum)
+# PwC_panel$store <- NULL
+# 
+# write.csv(PwC_panel, "Datasets/PwC Hackathon/PwC panel data.csv")
+pwc_panel <- read_csv("Datasets/PwC Hackathon/PwC panel data.csv")
+pwc_panel$date <- as.Date(pwc_panel$date, "%m/%d/%Y")
+pwc_panel %<>% mutate_at(c(2,5,16:60), as.factor)
+
+# combine store and dept as id
+pwc_seq <- pwc_panel
+pwc_seq$id <- paste(pwc_seq$store, "-", pwc_seq$dept)
+pwc_seq <- pwc_seq[,c(61,1:60)]
+pwc_seq <- pwc_seq[-c(2:3)]
+
+pwc_seq <- pdata.frame(pwc_seq, c("id", "date"))
+
+all(is.pconsecutive(pwc_seq))
+```
+
+```{r results='hide', message=FALSE}
+# Create First Differences
+pwc_seq %<>%
+  mutate(lag_wsales = Hmisc::Lag(wsales,1)) %>%
+  mutate(dwsales = (wsales/lag_wsales)-1)
+
+pwc_seq %<>%
+  mutate(lag_unemp = Hmisc::Lag(unemp,1)) %>%
+  mutate(dunemp = (unemp/lag_unemp)-1)
+
+pwc_seq %<>%
+  mutate(lag_temp = Hmisc::Lag(temp,1)) %>%
+  mutate(dtemp = (temp/lag_temp)-1)
+
+pwc_seq %<>%
+  mutate(lag_fuel = Hmisc::Lag(fuel,1)) %>%
+  mutate(dfuel = (fuel/lag_fuel)-1)
+
+pwc_seq %<>%
+  mutate(lag_cpi = Hmisc::Lag(cpi,1)) %>%
+  mutate(dcpi = (cpi/lag_cpi)-1)
+
+pwc_seq %<>%
+  mutate(lag_md1 = Hmisc::Lag(md1,1)) %>%
+  mutate(dmd1 = (md1/lag_md1)-1)
+
+pwc_seq %<>%
+  mutate(lag_md2 = Hmisc::Lag(md2,1)) %>%
+  mutate(dmd2 = (md2/lag_md2)-1)
+
+pwc_seq %<>%
+  mutate(lag_md3 = Hmisc::Lag(md3,1)) %>%
+  mutate(dmd3 = (md3/lag_md3)-1)
+
+pwc_seq %<>%
+  mutate(lag_md4 = Hmisc::Lag(md4,1)) %>%
+  mutate(dmd4 = (md4/lag_md4)-1)
+
+pwc_seq %<>%
+  mutate(lag_md5 = Hmisc::Lag(md5,1)) %>%
+  mutate(dmd5 = (md5/lag_md5)-1)
+```
+
+
+```{r echo=FALSE, results='hide',message=FALSE}
+#Data preparation 2
+
+is.nan.data.frame <- function(x)
+do.call(cbind, lapply(x, is.nan))
+pwc_seq[is.nan(pwc_seq)] <- 0
+
+pwc_clean<-na.omit(pwc_seq)
+
+pwc_inf <- data.table(pwc_clean)
+invisible(lapply(names(pwc_inf),function(.name) set(pwc_inf, which(is.infinite(pwc_inf[[.name]])), j = .name,value =NA)))
+pwc_clean2 <- na.omit(pwc_inf)
+pwc_clean2 <- pdata.frame(pwc_clean2, c("id", "date"))
+```
+
+```{r echo=FALSE}
+#Data Structure
+
+head(pwc_clean2)
+```
+
+```{r echo=FALSE, results='hide',message=FALSE}
+#unit root test
+# dept <−data.frame(split(pwc_panel, pwc_panel$dept))
+# pwc_purtest<-pdata.frame(pwc_purtest,index=c("dept","date"))
+# 
+# purtest(wsales~trend,data = pwc_clean2, index = c("id","date"), test = c("levinlin",
+#   "ips", "madwu", "Pm", "invnormal", "logit", "hadri"), lags = c("SIC", "AIC", "Hall"), pmax = 4)
+
+# pwc_seq <- pwc_seq %>% ungroup()
+```
+
+```{r echo = FALSE}
+panelView(wsales ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "Weekly Sales", type = "outcome", id = c("1 - 1"))
+
+panelView(dwsales ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD Weekly Sales", type = "outcome", id = c("1 - 1"))
+```
+
+```{r echo = FALSE}
+panelView(cpi ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "CPI", type = "outcome", id = c("1 - 1"))
+
+panelView(dcpi ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD CPI", type = "outcome", id = c("1 - 1"))
+```
+
+```{r echo = FALSE}
+panelView(unemp ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "Unemployment", type = "outcome", id = c("1 - 1"))
+
+panelView(dunemp ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD Unemployment", type = "outcome", id = c("1 - 1"))
+```
+
+```{r echo=FALSE}
+panelView(temp ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "Temperature", type = "outcome", id = c("1 - 1"))
+
+panelView(dtemp ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD Temperature", type = "outcome", id = c("1 - 1"))
+```
+
+```{r echo=FALSE}
+panelView(fuel ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "Fuel", type = "outcome", id = c("1 - 1"))
+
+panelView(dfuel ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD Fuel", type = "outcome", id = c("1 - 1"))
+```
+
+```{r echo=FALSE}
+panelView(md1 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "Discount 1", type = "outcome", id = c("1 - 1"))
+
+panelView(dmd1 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD Discount 1", type = "outcome", id = c("1 - 1"))
+```
+
+```{r echo=FALSE}
+panelView(md2 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "Discount 2", type = "outcome", id = c("1 - 1"))
+
+panelView(dmd2 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD Discount 2", type = "outcome", id = c("1 - 1"))
+```
+
+```{r echo=FALSE}
+panelView(md3 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "Discount 3", type = "outcome", id = c("1 - 1"))
+
+panelView(dmd3 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD Discount 3", type = "outcome", id = c("1 - 1"))
+```
+
+```{r echo=FALSE}
+panelView(md4 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "Discount 4", type = "outcome", id = c("1 - 1"))
+
+panelView(dmd4 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD Discount 4", type = "outcome", id = c("1 - 1"))
+```
+
+```{r echo=FALSE}
+panelView(md5 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "Discount 5", type = "outcome", id = c("1 - 1"))
+
+panelView(dmd5 ~ 1, data = pwc_clean2, index = c("id", "date"), 
+          main = "FD Discount 5", type = "outcome", id = c("1 - 1"))
+```
+
+
+```{r}
+# Panel data with random effects
+
+random <- plm(dwsales~holiday+dtemp+dfuel+dmd1+dmd2+dmd3+dmd4+dmd5+dcpi+dunemp+size, data=pwc_clean2, model="random", random.method="walhus",index=c("id","date"))
+summary(random)
+```
+
+```{r}
+# Panel data with two-way fixed effects (no store entity fixed effects)
+
+reg <- plm(dwsales~-1+dmd1+dmd2+dmd3+dmd4+dmd5,data=pwc_clean2, model="within", effect="twoways", index=c("id","date"))
+summary(reg)
+```
+
+
+
+```{r}
+# Panel data with two-way fixed effects
+
+fixed <- plm(dwsales~ -1+holiday+dtemp+dfuel+dmd1+dmd2+dmd3+dmd4+dmd5+dcpi+dunemp+size+store1+store2+store3+store4+store5+store6+store7+store8+store9+store10+store11+store12+store13+store14+store15+store16+store17+store18+store19+store20+store21+store22+store23+store24+store25+store26+store27+store28+store29+store30+store31+store32+store33+store34+store35+store36+store37+store38+store39+store40+store41+store42+store43+store44+store45, data=pwc_clean2, model="within", effect="twoways", index=c("id","date"))
+summary(fixed)
+pdwtest(fixed)
+
+fixed2 <- plm(dwsales~ -1+holiday+dtemp+dfuel+plm:::lagt.pseries(dmd1,1)+plm:::lagt.pseries(dmd2,1)+plm:::lagt.pseries(dmd3,1)+plm:::lagt.pseries(dmd3,1)+plm:::lagt.pseries(dmd4,1)+dmd1+dmd2+dmd3+dmd4+dmd5+dcpi+dunemp+size+store1+store2+store3+store4+store5+store6+store7+store8+store9+store10+store11+store12+store13+store14+store15+store16+store17+store18+store19+store20+store21+store22+store23+store24+store25+store26+store27+store28+store29+store30+store31+store32+store33+store34+store35+store36+store37+store38+store39+store40+store41+store42+store43+store44+store45, data=pwc_clean2, model="within", effect="twoways", index=c("id","date"))
+summary(fixed2)
+pdwtest(fixed2)
+
+fixed3 <- plm(dwsales~ -1+holiday+dtemp+dfuel+plm:::lagt.pseries(dmd1,1)+plm:::lagt.pseries(dmd2,1)+plm:::lagt.pseries(dmd3,1)+plm:::lagt.pseries(dmd3,1)+plm:::lagt.pseries(dmd4,1)+plm:::lagt.pseries(dmd1,2)+plm:::lagt.pseries(dmd2,2)+plm:::lagt.pseries(dmd3,2)+plm:::lagt.pseries(dmd4,2)+dmd1+dmd2+dmd3+dmd4+dmd5+dcpi+dunemp+size+store1+store2+store3+store4+store5+store6+store7+store8+store9+store10+store11+store12+store13+store14+store15+store16+store17+store18+store19+store20+store21+store22+store23+store24+store25+store26+store27+store28+store29+store30+store31+store32+store33+store34+store35+store36+store37+store38+store39+store40+store41+store42+store43+store44+store45, data=pwc_clean2, model="within", effect="twoways", index=c("id","date"))
+summary(fixed3)
+pdwtest(fixed3)
+```
+
+```{r echo=FALSE, results='hide',message=FALSE}
+# rasea <- as.data.frame(table(pwc_clean2$id))
+# rasea <- as.data.frame(table(rasea$Freq))
+# plot(rasea)
+# 
+# rasea2 <- as.data.frame(table(pwc_phtt2$id))
+# rasea2 <- as.data.frame(table(rasea2$Freq))
+# plot(rasea2)
+# 
+# length(unique(pwc_phtt$id))
+# length(unique(pwc_phtt2$id))
+# length(unique(pwc_phtt3$id))
+# length(unique(pwc_phtt4$id))
+# 
+# rasea4 <- as.data.frame(table(pwc_phtt3$id))
+# rasea4 <- as.data.frame(table(rasea4$Freq))
+# plot(rasea4)
+# 
+# rasea5 <- as.data.frame(table(pwc_phtt4$id))
+# rasea5 <- as.data.frame(table(rasea5$Freq))
+# plot(rasea5)
+# 
+# rasea3 <- as.data.frame(table(pwc_clean2$size))
+```
+
+```{r results='hide',message=FALSE}
+# PHTT Setup 1
+pwc_phtt <- pwc_clean2
+pwc_phtt %<>% group_by(id) %>%
+  filter(n() > 130) 
+pwc_phtt %<>% mutate_at(c(3:79), as.numeric)
+
+N <- 2215  #depts within stores
+T <- 130 #dates
+
+m.dwsales <- matrix(pwc_phtt$dwsales, T, N)
+m.md1 <- matrix(pwc_phtt$md1, T, N)
+m.md2 <- matrix(pwc_phtt$md2, T, N)
+m.md3 <- matrix(pwc_phtt$md3, T, N)
+m.md4 <- matrix(pwc_phtt$md4, T, N)
+m.md5 <- matrix(pwc_phtt$md5, T, N)
+m.dfuel <- matrix(pwc_phtt$dfuel, T, N)
+m.dtemp <- matrix(pwc_phtt$dtemp, T, N)
+m.dcpi <- matrix(pwc_phtt$dcpi, T, N)
+m.dunemp <- matrix(pwc_phtt$dunemp, T, N)
+m.holiday <- matrix(pwc_phtt$holiday, T, N)
+m.size <- matrix(pwc_phtt$size, T, N)
+```
+
+
+```{r}
+# Panel Data PCA mixed stores
+pwc_pca<-pwc_phtt[-c(1,2)]
+pwc_pca<-data.matrix(pwc_pca)
+phtt::OptDim(pwc_pca, d.max=70, criteria = c("IC1", "IC2", "IC3",
+                                                   "PC1", "PC2", "PC3"))
+```
+
+```{r results='hide',message=FALSE}
+# PHTT Setup Only Largest Stores
+pwc_phtt2 <- pwc_clean2
+pwc_phtt2 %<>% group_by(size) %>%
+  filter(size >200000) 
+pwc_phtt2 <-ungroup(pwc_phtt2)
+pwc_phtt2 %<>% group_by(id)
+pwc_phtt2 %<>% mutate_at(c(3:79), as.numeric)
+
+N <- 1009  #depts within stores
+T <- 134 #dates
+
+m2.dwsales <- matrix(pwc_phtt2$dwsales, T, N)
+m2.md1 <- matrix(pwc_phtt2$md1, T, N)
+m2.md2 <- matrix(pwc_phtt2$md2, T, N)
+m2.md3 <- matrix(pwc_phtt2$md3, T, N)
+m2.md4 <- matrix(pwc_phtt2$md4, T, N)
+m2.md5 <- matrix(pwc_phtt2$md5, T, N)
+m2.dfuel <- matrix(pwc_phtt2$dfuel, T, N)
+m2.dtemp <- matrix(pwc_phtt2$dtemp, T, N)
+m2.dcpi <- matrix(pwc_phtt2$dcpi, T, N)
+m2.dunemp <- matrix(pwc_phtt2$dunemp, T, N)
+m2.holiday <- matrix(pwc_phtt2$holiday, T, N)
+m2.size <- matrix(pwc_phtt2$size, T, N)
+```
+
+
+```{r}
+# Panel Data PCA large stores
+pwc_pca2<-pwc_phtt2[-c(1,2)]
+pwc_pca2<-data.matrix(pwc_pca2)
+phtt::OptDim(pwc_pca2, d.max=50, criteria = c("IC1", "IC2", "IC3",
+                                                   "PC1", "PC2", "PC3"))
+```
+
+```{r results='hide',message=FALSE}
+# PHTT Setup Only Small Stores
+pwc_phtt3 <- pwc_clean2
+pwc_phtt3 %<>% group_by(size) %>%
+  filter(size <100000) 
+pwc_phtt3 <-ungroup(pwc_phtt3)
+pwc_phtt3 %<>% group_by(id)
+pwc_phtt3 %<>% mutate_at(c(3:79), as.numeric)
+
+N <- 943  #depts within stores
+T <- 120 #dates
+
+m3.dwsales <- matrix(pwc_phtt3$dwsales, T, N)
+m3.md1 <- matrix(pwc_phtt3$md1, T, N)
+m3.md2 <- matrix(pwc_phtt3$md2, T, N)
+m3.md3 <- matrix(pwc_phtt3$md3, T, N)
+m3.md4 <- matrix(pwc_phtt3$md4, T, N)
+m3.md5 <- matrix(pwc_phtt3$md5, T, N)
+m3.dfuel <- matrix(pwc_phtt3$dfuel, T, N)
+m3.dtemp <- matrix(pwc_phtt3$dtemp, T, N)
+m3.dcpi <- matrix(pwc_phtt3$dcpi, T, N)
+m3.dunemp <- matrix(pwc_phtt3$dunemp, T, N)
+m3.holiday <- matrix(pwc_phtt3$holiday, T, N)
+m3.size <- matrix(pwc_phtt3$size, T, N)
+```
+
+
+```{r}
+# Panel Data PCA small stores
+pwc_pca3<-pwc_phtt3[-c(1,2)]
+pwc_pca3<-data.matrix(pwc_pca3)
+phtt::OptDim(pwc_pca3, d.max=50, criteria = c("IC1", "IC2", "IC3",
+                                                   "PC1", "PC2", "PC3"))
+```
+
+```{r results='hide',message=FALSE}
+# PHTT Setup Only Medium Stores
+pwc_phtt4 <- pwc_clean2
+pwc_phtt4 %<>% group_by(size) %>%
+  filter(between(size, 100000, 200000))
+pwc_phtt4 <-ungroup(pwc_phtt4)
+pwc_phtt4 %<>% group_by(id)
+pwc_phtt4 %<>% mutate_at(c(3:79), as.numeric)
+
+N <- 1372  #depts within stores
+T <- 127 #dates
+
+m4.dwsales <- matrix(pwc_phtt4$dwsales, T, N)
+m4.md1 <- matrix(pwc_phtt4$md1, T, N)
+m4.md2 <- matrix(pwc_phtt4$md2, T, N)
+m4.md3 <- matrix(pwc_phtt4$md3, T, N)
+m4.md4 <- matrix(pwc_phtt4$md4, T, N)
+m4.md5 <- matrix(pwc_phtt4$md5, T, N)
+m4.dfuel <- matrix(pwc_phtt4$dfuel, T, N)
+m4.dtemp <- matrix(pwc_phtt4$dtemp, T, N)
+m4.dcpi <- matrix(pwc_phtt4$dcpi, T, N)
+m4.dunemp <- matrix(pwc_phtt4$dunemp, T, N)
+m4.holiday <- matrix(pwc_phtt4$holiday, T, N)
+m4.size <- matrix(pwc_phtt4$size, T, N)
+```
+
+```{r}
+# Panel Data PCA medium stores
+pwc_pca4<-pwc_phtt4[-c(1,2)]
+pwc_pca4<-data.matrix(pwc_pca4)
+phtt::OptDim(pwc_pca4, d.max=50, criteria = c("IC1", "IC2", "IC3",
+                                                   "PC1", "PC2", "PC3"))
+```
+
+```{r}
+# Panel data with interactive fixed effects
+interactive <- phtt::Eup(m.dwsales ~ -1 + m.md1+m.md2+m.md3+m.md4+m.md5, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=64, max.iteration=500)
+summary(interactive)
+
+interactive2 <- phtt::Eup(m.dwsales~ -1+m.holiday+m.dtemp+m.dfuel+m.md1+m.md2+m.md3+m.md4+m.md5+m.dcpi+m.dunemp, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=64, max.iteration=500)
+summary(interactive2)
+```
+
+
+```{r}
+# Panel data with interactive fixed effects for large stores
+interactive_large <- phtt::Eup(m2.dwsales ~ -1 + m2.md1+m2.md2+m2.md3+m2.md4+m2.md5, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=43, max.iteration=500)
+summary(interactive_large)
+
+interactive_large2 <- phtt::Eup(m2.dwsales~ -1+m2.holiday+m2.dtemp+m2.dfuel+m2.md1+m2.md2+m2.md3+m2.md4+m2.md5+m2.dcpi+m2.dunemp, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=43, max.iteration=500)
+summary(interactive_large2)
+```
+
+```{r}
+# Panel data with interactive fixed effects for small stores
+interactive_small <- phtt::Eup(m3.dwsales ~ -1 + m3.md1+m3.md2+m3.md3+m3.md4+m3.md5, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=45, max.iteration=500)
+summary(interactive_small)
+
+interactive_small2 <- phtt::Eup(m3.dwsales~ -1+m3.holiday+m3.dtemp+m3.dfuel+m3.md1+m3.md2+m3.md3+m3.md4+m3.md5+m3.dcpi+m3.dunemp, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=45, max.iteration=500)
+summary(interactive_small2)
+```
+
+```{r}
+# Panel data with interactive fixed effects for medium stores
+interactive_med <- phtt::Eup(m4.dwsales ~ -1 + m4.md1+m4.md2+m4.md3+m4.md4+m4.md5, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=48, max.iteration=500)
+summary(interactive_med)
+
+interactive_med2 <- phtt::Eup(m4.dwsales~ -1+m4.holiday+m4.dtemp+m4.dfuel+m4.md1+m4.md2+m4.md3+m4.md4+m4.md5+m4.dcpi+m4.dunemp, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=48, max.iteration=500)
+summary(interactive_med2)
+```
+
+```{r}
+#Panel setup with wsales lag
+pwc_phtt5 <-pwc_phtt
+pwc_phtt5 %<>%
+  mutate(lag_wsales2 = Hmisc::Lag(lag_wsales,1)) %>%
+  mutate(dwsales2 = (lag_wsales/lag_wsales2)-1)
+
+is.nan.data.frame <- function(x)
+do.call(cbind, lapply(x, is.nan))
+pwc_phtt5[is.nan(pwc_phtt5)] <- 0
+
+pwc_phtt5<-na.omit(pwc_phtt5)
+
+pwc_inf2 <- data.table(pwc_phtt5)
+invisible(lapply(names(pwc_inf2),function(.name) set(pwc_inf2, which(is.infinite(pwc_inf2[[.name]])), j = .name,value =NA)))
+pwc_phtt5 <- na.omit(pwc_inf2)
+pwc_phtt5 <- pdata.frame(pwc_phtt5, c("id", "date"))
+```
+
+
+```{r results='hide',message=FALSE}
+# Panel setup with lags
+pwc_phtt5 %<>% group_by(id) %>%
+  filter(n() > 130) 
+pwc_phtt5 %<>% mutate_at(c(3:79), as.numeric)
+
+N <- 2215  #depts within stores
+T <- 130 #dates
+
+m.dwsales <- matrix(pwc_phtt5$dwsales, T, N)
+m.dwsales2 <- matrix(pwc_phtt5$dwsales2, T, N)
+m.md1 <- matrix(pwc_phtt5$md1, T, N)
+m.md2 <- matrix(pwc_phtt5$md2, T, N)
+m.md3 <- matrix(pwc_phtt5$md3, T, N)
+m.md4 <- matrix(pwc_phtt5$md4, T, N)
+m.md5 <- matrix(pwc_phtt5$md5, T, N)
+m.lmd1 <- matrix(pwc_phtt5$lag_md1, T, N)
+m.lmd2 <- matrix(pwc_phtt5$lag_md2, T, N)
+m.lmd3 <- matrix(pwc_phtt5$lag_md3, T, N)
+m.lmd4 <- matrix(pwc_phtt5$lag_md4, T, N)
+m.lmd5 <- matrix(pwc_phtt5$lag_md5, T, N)
+m.dfuel <- matrix(pwc_phtt5$dfuel, T, N)
+m.dtemp <- matrix(pwc_phtt5$dtemp, T, N)
+m.dcpi <- matrix(pwc_phtt5$dcpi, T, N)
+m.dunemp <- matrix(pwc_phtt5$dunemp, T, N)
+m.holiday <- matrix(pwc_phtt5$holiday, T, N)
+m.size <- matrix(pwc_phtt5$size, T, N)
+```
+
+
+```{r}
+# Panel data with interactive fixed effects with lags
+
+interactive3 <- phtt::Eup(m.dwsales2~ -1+m.dtemp+m.dfuel+m.lmd1+m.lmd2+m.lmd3+m.lmd4+m.lmd5+m.dcpi+m.dunemp+m.holiday, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=64, max.iteration=500)
+summary(interactive3)
+
+interactive4 <- phtt::Eup(m.dwsales2~ -1+m.dtemp+m.dfuel+m.md1+m.md2+m.md3+m.md4+m.md5+m.lmd1+m.lmd2+m.lmd3+m.lmd4+m.lmd5+m.dcpi+m.dunemp, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=64, max.iteration=500)
+summary(interactive4)
+
+interactive5 <- phtt::Eup(m.dwsales2~ -1+m.dtemp+m.dfuel+m.md1+m.md2+m.md3+m.md4+m.md5+m.dcpi+m.dunemp, 
+               additive.effects = c("twoways"), dim.criterion = c("PC1", "PC2", "PC3", "BIC3","IC1", "IC2" ,
+              "IC3", "IPC1", "IPC2", "IPC3"), d.max=64, max.iteration=500)
+summary(interactive5)
+```
+
+
+```{r echo=FALSE, results='hide',message=FALSE}
+# Bonus: Forecasting
+# e <- tsCV(pwc_11, forecastfunction = naive, h = 4)
+# mse <- mean(e^2, na.rm=TRUE)
+```
+
+
+```{r echo=FALSE, results='hide',message=FALSE}
+# Bonus: Predicting Counterfactuals using CausalImpact
+# time.points <- seq.Date(as.Date("2010-02-12"), by = 14, length.out = 500)
+# pwc_11 <- subset(pwc_clean2, id == "1 - 1")
+# pwc_11 <- zoo(cbind(pwc_11), time.points)
+
+# pwc_11 <- pwc_11[,c(3,7)]
+# pwc_11 <- as.data.frame(pwc_11)
+# pwc_11 %<>% mutate_at(c(1,2), as.numeric)
+ 
+# pre.period <- as.Date(c("2010-02-12", "2011-11-04"))
+# post.period <- as.Date(c("2011-11-11", "2012-10-26"))
+# impact <- CausalImpact(pwc_11, pre.period, post.period)
+
+# summary(impact, "report")
+```
+
+```{r echo=FALSE, results='hide',message=FALSE}
+# plot(impact)
+```
+
+## Challenges
+1. Unbalanced panel data
+2. Gaps in time series
+
+## Conclusion
+The effect of price markdown is not seen in the model. Nevertheless, this may be related to the quality of the data that we have. Some of the data in the markdown are believed to be missing, as there is a very low likelihood that the stores did not conduct any markdowns for an entire year.
+
+## Further Research
+Formal unit root test, determination of lags, forecasting, and causal inference, if we are able to gather more balanced data without missing values or gaps.
